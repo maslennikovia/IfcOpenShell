@@ -29,6 +29,7 @@
 using json = nlohmann::json;
 
 #include <map>
+#include "../../_build-vs2022-x64/MrsGrid.h"
 
 class SERIALIZERS_API GltfSerializer : public WriteOnlyGeometrySerializer {
 private:
@@ -51,6 +52,7 @@ public:
 	bool isTesselated() const { return true; }
 	void setUnitNameAndMagnitude(const std::string& /*name*/, float /*magnitude*/) {}
 	void setFile(IfcParse::IfcFile*);
+	std::vector<MrsGrid> grids;
 };
 
 #endif

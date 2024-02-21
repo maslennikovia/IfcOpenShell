@@ -28,6 +28,7 @@
 #endif
 
 #include <iterator>
+#include "../../_build-vs2022-x64/MrsGrid.h"
 
 static const uint32_t GLTF = 0x46546C67U;
 static const uint32_t JSON = 0x4E4F534A;
@@ -205,9 +206,22 @@ void GltfSerializer::write(const IfcGeom::TriangulationElement* o) {
 		// glTF validator complains about identity matrices
 		node["matrix"] = matrix_flat;
 	}
+
+	auto guid1 = object_id(o);
 	node["name"] = object_id(o);
 	
 	int current_mesh_index;
+
+	bool isGrid = false;
+	//std::map<std:string, 
+	if (grids.size() != 0) {
+		for (MrsGrid g : grids)
+		{
+			if (g.guid == node["name"]) {
+				isGrid = true;
+			}
+		}
+	}
 
 	// See if this mesh has already been processed
 	auto it = meshes_.find(o->geometry().id());
@@ -295,6 +309,10 @@ void GltfSerializer::write(const IfcGeom::TriangulationElement* o) {
 	node["mesh"] = current_mesh_index;
 	json_["nodes"].push_back(node);
 }
+
+//std::string convert_to_ifcguid(std::string name) {
+//	
+//}
 
 template <uint32_t>
 struct padding_char { static const char value; };

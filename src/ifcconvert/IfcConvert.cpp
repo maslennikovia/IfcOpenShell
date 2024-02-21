@@ -26,6 +26,8 @@
  *                                                                              *
  ********************************************************************************/
 
+#define IfcSchema Ifc2x3
+
 #include "../serializers/ColladaSerializer.h"
 #include "../serializers/GltfSerializer.h"
 #include "../serializers/HdfSerializer.h"
@@ -40,6 +42,27 @@
 #include "../ifcgeom_schema_agnostic/IfcGeomIterator.h"
 #include "../ifcgeom_schema_agnostic/IfcGeomRenderStyles.h"
 #include "../ifcgeom_schema_agnostic/base_utils.h"
+#include "../ifcgeom/IfcGeom.h"
+#include "../../_build-vs2022-x64/MrsGrid.h"
+#include "../../_build-vs2022-x64/MrsPoint.h"
+#include "../../_build-vs2022-x64/MrsAxis.h"
+
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
+
+#ifdef _DEBUG
+#define DEBUG_WAS_DEFINED
+#undef _DEBUG
+#endif
+
+#ifdef DEBUG_WAS_DEFINED
+#define _DEBUG
+#endif
+
+#include <format>
+#include <iostream>
+#include <typeinfo>
+#include <stdlib.h>
 
 #include "../ifcparse/utils.h"
 
@@ -84,14 +107,20 @@ static std::ostream& cerr_ = std::cerr;
 const std::string DEFAULT_EXTENSION = ".obj";
 const std::string TEMP_FILE_EXTENSION = ".tmp";
 
+json json_, node_array_;
+
+json get_axis(boost::shared_ptr<Ifc2x3::IfcGridAxis::list> axis, std::vector<MrsAxis>* gridAxes);
+
+void export_grids(json grids, path_t output_filename);
+
 namespace po = boost::program_options;
 
-void print_version()
+extern "C" __declspec(dllexport) void print_version()
 {
     cout_ << "IfcOpenShell IfcConvert " << IFCOPENSHELL_VERSION << " (OCC " << OCC_VERSION_STRING_EXT << ")\n";
 }
 
-void print_usage(bool suggest_help = true)
+extern "C" __declspec(dllexport) void print_usage(bool suggest_help = true)
 {
     cout_ << "Usage: IfcConvert [options] <input.ifc> [<output>]\n"
         << "\n"
@@ -153,6 +182,7 @@ bool file_exists(const std::string& filename) {
 
 static std::basic_stringstream<path_t::value_type> log_stream;
 void write_log(bool);
+std::vector<MrsGrid> get_grids(IfcParse::IfcFile& f, path_t output_filename);
 void fix_quantities(IfcParse::IfcFile&, bool, bool, bool);
 std::string format_duration(time_t start, time_t end);
 
@@ -193,10 +223,32 @@ struct verbosity_counter {
 	}
 };
 
+#include <iostream>
+#include <string>
 #if defined(_MSC_VER) && defined(_UNICODE)
-int wmain(int argc, wchar_t** argv) {
+extern "C" __declspec(dllexport) int wmain(int argc, wchar_t** argv) {
 	typedef po::wcommand_line_parser command_line_parser;
 	typedef wchar_t char_t;
+	
+	/*argc = 3;
+
+	auto params = L"y plan";
+	auto p = const_cast<wchar_t*>(params);
+	auto ifcPath = L"E:\\_Grids\\grid.ifc";
+	auto i = const_cast<wchar_t*>(ifcPath);
+	auto result = L"E:\\_Grids\\grid.mrs";
+	auto r = const_cast<wchar_t*>(result);
+
+	wchar_t* numbers[3]{  p , i,  r };
+
+	argv = numbers;*/
+
+	//std::remove_const<wchar_t**>:: type numbers;
+	/*printf("Argc: %d\n", argc);
+	for (int i = 0; i < argc; i++)
+	{
+		wprintf(L"%s", argv[i]);
+	}*/
 
 	_setmode(_fileno(stdout), _O_U16TEXT);
 	_setmode(_fileno(stderr), _O_U16TEXT);
@@ -205,7 +257,6 @@ int main(int argc, char** argv) {
 	typedef po::command_line_parser command_line_parser;
 	typedef char char_t;
 #endif
-
 	double deflection_tolerance, angular_tolerance, force_space_transparency;
 	inclusion_filter include_filter;
 	inclusion_traverse_filter include_traverse_filter;
@@ -216,7 +267,6 @@ int main(int argc, char** argv) {
 	path_t log_file;
 	path_t cache_file;
 	std::string log_format;
-
     po::options_description generic_options("Command line options");
 	verbosity_counter vcounter;
 	generic_options.add_options()
@@ -241,11 +291,11 @@ int main(int argc, char** argv) {
 #endif
 		("input-file", new po::typed_value<path_t, char_t>(0), "input IFC file")
 		("output-file", new po::typed_value<path_t, char_t>(0), "output geometry file")
+		
 #ifdef WITH_HDF5
 		("cache-file", new po::typed_value<path_t, char_t>(&cache_file), "geometry cache file")
 #endif
 		;
-
 	po::options_description ifc_options("IFC options");
 	ifc_options.add_options()
 		("calculate-quantities", "Calculate or fix the physical quantity definitions "
@@ -378,7 +428,6 @@ int main(int argc, char** argv) {
 	// "none", "full" or "left"
 	std::string storey_height_display;
 	SvgSerializer::storey_height_display_types svg_storey_height_display = SvgSerializer::SH_NONE;
-
     po::options_description serializer_options("Serialization options");
     serializer_options.add_options()
 #ifdef HAVE_ICU
@@ -470,7 +519,6 @@ int main(int argc, char** argv) {
     po::positional_options_description positional_options;
 	positional_options.add("input-file", 1);
 	positional_options.add("output-file", 1);
-
     po::variables_map vmap;
     try {
         po::store(command_line_parser(argc, argv).
@@ -639,6 +687,7 @@ int main(int argc, char** argv) {
 	}
 
 	const path_t input_filename = vmap["input-file"].as<path_t>();
+	cout_ << input_filename.c_str();
     if (!file_exists(IfcUtil::path::to_utf8(input_filename))) {
         cerr_ << "[Error] Input file '" << input_filename << "' does not exist" << std::endl;
         return EXIT_FAILURE;
@@ -646,10 +695,11 @@ int main(int argc, char** argv) {
 
 	// If no output filename is specified a Wavefront OBJ file will be output
 	// to maintain backwards compatibility with the obsolete IfcObj executable.
-	const path_t output_filename = vmap.count("output-file") == 1 
+	path_t output_filename = vmap.count("output-file") == 1 
 		? vmap["output-file"].as<path_t>()
 		: change_extension(input_filename, IfcUtil::path::from_utf8(DEFAULT_EXTENSION));
-	
+	cout_ << output_filename.c_str();
+
 	if (output_filename.size() < 5) {
         cerr_ << "[Error] Invalid or unsupported output file '" << output_filename << "' given" << std::endl;
         print_usage();
@@ -694,7 +744,7 @@ int main(int argc, char** argv) {
 	}
 
     path_t output_temp_filename = output_filename + IfcUtil::path::from_utf8(TEMP_FILE_EXTENSION);
-	
+	cout_ << output_filename.c_str();
 	std::vector<path_t> tokens;
 	split(tokens, output_filename, boost::is_any_of("."));
 	std::vector<path_t>::iterator tok_iter;
@@ -702,7 +752,7 @@ int main(int argc, char** argv) {
 	path_t dot;
 	dot = '.';	
 	path_t output_extension = dot + ext;
-
+	cout_ << ext.c_str();
 	boost::to_lower(output_extension);
 
 	IfcParse::IfcFile* ifc_file = 0;
@@ -720,31 +770,40 @@ int main(int argc, char** argv) {
 		IFC = IfcUtil::path::from_utf8(".ifc"),
 		USD = IfcUtil::path::from_utf8(".usd"),
 		USDA = IfcUtil::path::from_utf8(".usda"),
+		MRS = IfcUtil::path::from_utf8(".mrs"),
 		USDC = IfcUtil::path::from_utf8(".usdc");
 
+	cout_ << output_extension.c_str();
 	// @todo clean up serializer selection
 	// @todo detect program options that conflict with the chosen serializer
-	if (output_extension == XML) {
+	if (output_extension == XML || output_extension == MRS) {
 		int exit_code = EXIT_FAILURE;
 		try {
+			cout_ << input_filename;
+			path_t xml_output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".xml");
+			path_t xml_output_temp_filename = xml_output_filename + IfcUtil::path::from_utf8(".tmp");
 			if (init_input_file(IfcUtil::path::to_utf8(input_filename), ifc_file, no_progress || quiet, mmap)) {
 				time_t start, end;
 				time(&start);
-				XmlSerializer s(ifc_file, IfcUtil::path::to_utf8(output_temp_filename));
+				XmlSerializer s(ifc_file, IfcUtil::path::to_utf8(xml_output_temp_filename));
 				Logger::Status("Writing XML output...");
 				s.finalize();
 				time(&end);
 				Logger::Status("Done! Conversion took " +  format_duration(start, end));
 
-				IfcUtil::path::rename_file(IfcUtil::path::to_utf8(output_temp_filename), IfcUtil::path::to_utf8(output_filename));
-				exit_code = EXIT_SUCCESS;
+				IfcUtil::path::rename_file(IfcUtil::path::to_utf8(xml_output_temp_filename), IfcUtil::path::to_utf8(xml_output_filename));
+				if (output_extension == XML) {
+					exit_code = EXIT_SUCCESS;
+					write_log(!quiet);
+					return exit_code;
+				}
+					
 			}
 		} catch (const std::exception& e) {
 			Logger::Error(e);
 		}
-		write_log(!quiet);
-		return exit_code;
-	} else if (output_extension == IFC) {
+	}
+	else if (output_extension == IFC) {
 		int exit_code = EXIT_FAILURE;
 		try {
 			if (init_input_file(IfcUtil::path::to_utf8(input_filename), ifc_file, no_progress || quiet, mmap)) {
@@ -862,7 +921,10 @@ int main(int argc, char** argv) {
 		serializer = boost::make_shared<ColladaSerializer>(IfcUtil::path::to_utf8(output_temp_filename), settings);
 #endif
 #ifdef WITH_GLTF
-	} else if (output_extension == GLB) {
+	} else if (output_extension == GLB || output_extension == MRS) {
+		settings.set(IfcGeom::IteratorSettings::INCLUDE_CURVES, true);
+		settings.set(IfcGeom::IteratorSettings::ELEMENT_HIERARCHY, true);
+		output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".glb");
 		serializer = boost::make_shared<GltfSerializer>(IfcUtil::path::to_utf8(output_temp_filename), settings);
 #endif
 #ifdef WITH_USD
@@ -887,12 +949,60 @@ int main(int argc, char** argv) {
 		serializer = boost::make_shared<HdfSerializer>(IfcUtil::path::to_utf8(output_temp_filename), settings);
 	}
 #endif
-	
+	//else if (output_extension == MRS) {
+	//	int exit_code = EXIT_FAILURE;
+	//	try {
+
+	//		path_t xml_output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".xml");
+	//		path_t xml_output_temp_filename = xml_output_filename + IfcUtil::path::from_utf8(".tmp");
+	//		cout_ << input_filename;
+	//		if (init_input_file(IfcUtil::path::to_utf8(input_filename), ifc_file, no_progress || quiet, mmap)) {
+	//			time_t start, end;
+	//			time(&start);
+	//			auto grids = get_grids(*ifc_file, output_filename);
+	//			XmlSerializer s(ifc_file, IfcUtil::path::to_utf8(xml_output_temp_filename));
+	//			Logger::Status("Writing XML output...");
+	//			s.finalize();
+	//			time(&end);
+	//			Logger::Status("Xml conversion done! Conversion took " + format_duration(start, end));
+
+	//			IfcUtil::path::rename_file(IfcUtil::path::to_utf8(xml_output_temp_filename), IfcUtil::path::to_utf8(xml_output_filename));
+	//			
+	//			// Set glb include curves flag for grid convertation
+	//			settings.set(IfcGeom::IteratorSettings::INCLUDE_CURVES, true);
+	//			settings.set(IfcGeom::IteratorSettings::ELEMENT_HIERARCHY, true);
+	//			settings.set(IfcGeom::IteratorSettings::GENERATE_UVS, true);
+	//			output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".glb");
+	//			path_t gltf_output_temp_filename = output_filename + IfcUtil::path::from_utf8(".tmp");
+
+	//			//path_t gltf_output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".glb");
+	//			
+	//			serializer = boost::make_shared<GltfSerializer>(IfcUtil::path::to_utf8(output_filename), settings);
+
+	//			//IfcUtil::path::rename_file(IfcUtil::path::to_utf8(gltf_output_temp_filename), IfcUtil::path::to_utf8(gltf_output_filename));
+
+	//			exit_code = EXIT_SUCCESS;
+	//		}
+	//	}
+	//	catch (const std::exception& e) {
+	//		Logger::Error(e);
+	//	}
+	//	write_log(!quiet);
+	//	return exit_code;
+	//}
 	else {
         cerr_ << "[Error] Unknown output filename extension '" << output_extension << "'\n";
 		write_log(!quiet);
 		print_usage();
 		return EXIT_FAILURE;
+	}
+
+	if (output_extension == MRS)
+	{
+		auto grids = get_grids(*ifc_file, output_filename);
+		path_t mrs_output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".mrs");
+		auto name = output_filename.c_str();
+		auto zip_name = mrs_output_filename.c_str();
 	}
 
     if (use_element_hierarchy && output_extension != DAE) {
@@ -1260,6 +1370,9 @@ void write_log(bool header) {
 }
 
 #include <boost/algorithm/string/predicate.hpp>
+#include <GeomAPI.hxx>
+#include <BRepAdaptor_CompCurve.hxx>
+#include <BRepAdaptor_HCompCurve.hxx>
 
 bool init_input_file(const std::string& filename, IfcParse::IfcFile*& ifc_file, bool no_progress, bool mmap) {
     time_t start, end;
@@ -1283,7 +1396,7 @@ bool init_input_file(const std::string& filename, IfcParse::IfcFile*& ifc_file, 
 		ifc_file = new IfcParse::IfcFile(filename);
 #endif
 	}
-
+	ifc_file->instances_by_type("IfcGridAxis");
 	if (!ifc_file || !ifc_file->good()) {
         Logger::Error("Unable to parse input file '" + filename + "'");
         return false;
@@ -1292,7 +1405,6 @@ bool init_input_file(const std::string& filename, IfcParse::IfcFile*& ifc_file, 
 
     if (no_progress) { Logger::SetOutput(&cout_, &log_stream); }
     else {  Logger::Status("Parsing input file took " + format_duration(start, end)); }
-
     return true;
 
 }
@@ -1448,23 +1560,24 @@ std::vector<IfcGeom::filter_t> setup_filters(const std::vector<geom_filter>& fil
         }
     }
 
-    // If no entity names are specified these are the defaults to skip from output
-    if (entity_filter.entity_names.empty()) {
-        std::set<std::string> entities;
-        entities.insert("IfcSpace");
-        if (output_extension == ".svg") {
-            entity_filter.include = true;
-        } else {
-            entities.insert("IfcOpeningElement");
-        }
-        entity_filter.entity_names = entities;
-    }
+	// If no entity names are specified these are the defaults to skip from output
+if (entity_filter.entity_names.empty()) {
+	std::set<std::string> entities;
+	entities.insert("IfcSpace");
+	if (output_extension == ".svg") {
+		entity_filter.include = true;
+	}
+	else {
+		entities.insert("IfcOpeningElement");
+	}
+	entity_filter.entity_names = entities;
+}
 
-    if (!layer_filter.values.empty()) { filter_funcs.push_back(boost::ref(layer_filter));  }
-    if (!entity_filter.entity_names.empty()) { filter_funcs.push_back(boost::ref(entity_filter)); }
-    if (!attribute_filter.values.empty()) { filter_funcs.push_back(boost::ref(attribute_filter)); }
+if (!layer_filter.values.empty()) { filter_funcs.push_back(boost::ref(layer_filter)); }
+if (!entity_filter.entity_names.empty()) { filter_funcs.push_back(boost::ref(entity_filter)); }
+if (!attribute_filter.values.empty()) { filter_funcs.push_back(boost::ref(attribute_filter)); }
 
-    return filter_funcs;
+return filter_funcs;
 }
 
 namespace latebound_access {
@@ -1493,7 +1606,8 @@ namespace latebound_access {
 		auto attr_type = decl->attribute_by_index(i)->type_of_attribute();
 		if (attr_type->as_named_type() && attr_type->as_named_type()->declared_type()->as_enumeration_type() && !std::is_same<T, IfcWrite::IfcWriteArgument::EnumerationReference>::value) {
 			set_enumeration(inst, attr, attr_type->as_named_type()->declared_type()->as_enumeration_type(), t);
-		} else {
+		}
+		else {
 			IfcWrite::IfcWriteArgument* a = new IfcWrite::IfcWriteArgument;
 			a->set(t);
 			inst->data().attributes()[i] = a;
@@ -1506,10 +1620,156 @@ namespace latebound_access {
 		auto inst = f.schema()->instantiate(data);
 		if (decl->is("IfcRoot")) {
 			IfcParse::IfcGlobalId guid;
-			latebound_access::set(inst, "GlobalId", (std::string) guid);
+			latebound_access::set(inst, "GlobalId", (std::string)guid);
 		}
 		return f.addEntity(inst);
 	}
+}
+
+
+std::vector<MrsGrid> get_grids(IfcParse::IfcFile& f, path_t output_filename) {
+
+	aggregate_of_instance::ptr gridInstances = f.instances_by_type("IfcGrid");
+
+	auto IfcRelDefinesByProperties = f.schema()->declaration_by_name("IfcProduct");
+
+	auto schemaName = f.schema()->name();
+	std::vector<MrsGrid> grids;
+	
+	json j_grids = json::array();
+
+	if (gridInstances && schemaName == "IFC2X3") {
+		for (auto& eq : *gridInstances) {
+
+			auto grid = dynamic_cast<Ifc2x3::IfcGrid*>(eq);
+			if (!grid) {
+				continue;
+			}
+
+			MrsGrid mrsGrid;
+			mrsGrid.guid = grid->GlobalId();
+			boost::optional<std::string> name = grid->Name();
+
+			boost::shared_ptr<Ifc2x3::IfcGridAxis::list> uaxis = grid->UAxes();
+			boost::shared_ptr<Ifc2x3::IfcGridAxis::list> vaxis = grid->VAxes();
+			
+			
+
+			json j_grid;
+			auto check = get_axis(uaxis, &mrsGrid.uaxes);
+			j_grid["uaxes"] = get_axis(uaxis, &mrsGrid.uaxes);
+			j_grid["vaxes"] = get_axis(vaxis, &mrsGrid.vaxes);
+
+			auto w = grid->WAxes();
+			if (w.has_value()) {
+				boost::shared_ptr<Ifc2x3::IfcGridAxis::list> waxis = grid->WAxes().value();
+				j_grid["waxes"] = get_axis(waxis, &mrsGrid.vaxes);
+			}
+			
+			j_grid["guid"] = mrsGrid.guid;
+
+			grids.push_back(mrsGrid);
+
+			j_grids.push_back(j_grid);
+		}
+	}
+	export_grids(j_grids, output_filename);
+	return grids;
+}
+
+
+//#define IfcSchema Ifc2x3
+//#define Kernel MAKE_TYPE_NAME(Kernel)
+json get_axis(boost::shared_ptr<Ifc2x3::IfcGridAxis::list> axis, std::vector<MrsAxis>* gridAxes)
+{
+	json j_axes = json::array();
+	for (auto& rel : *axis) {
+
+		auto axis = dynamic_cast<Ifc2x3::IfcGridAxis*>(rel);
+		auto axisCurve = axis->AxisCurve();
+
+		boost::optional<std::string> axisName = axis->AxisTag();
+
+		//auto pU = axis->PartOfU();
+		//auto curve = axis->AxisCurve();
+		//auto curvedata = curve->data();
+		//curvedata.id();
+
+		Handle(Geom_Curve) curve;
+		
+		IfcGeom::KernelIfc2x3 kernel;
+
+		gp_Pnt startPoint;
+		gp_Pnt endPoint;
+
+		TopoDS_Wire wire;
+		if (kernel.convert_curve(axisCurve, curve))
+		{
+			auto start = curve->FirstParameter();
+			auto end = curve->LastParameter();
+			startPoint = curve->Value(start);
+			endPoint = curve->Value(end);
+		}
+		else if (kernel.convert_wire(axisCurve, wire))
+		{
+#if OCC_VERSION_HEX < 0x70600
+			BRepAdaptor_CompCurve cc(wire, true);
+			Handle(Adaptor3d_HCurve) hcc = Handle(Adaptor3d_HCurve)(new BRepAdaptor_HCompCurve(cc));
+#else
+			auto hcc = new BRepAdaptor_CompCurve(w, true);
+#endif
+
+			auto start = hcc->FirstParameter();
+			auto end = hcc->LastParameter();
+			startPoint = hcc->Value(start);
+			endPoint = hcc->Value(end);
+		}
+
+		json j_points = json::array();
+
+		MrsPoint mrsStart(startPoint);
+		MrsPoint mrsEnd(endPoint);
+		MrsAxis mrsAxis;
+		mrsAxis.points.push_back(mrsStart);
+		mrsAxis.points.push_back(mrsEnd);
+
+		std::string start;
+		start.append("{ \"X\": " + boost::lexical_cast<std::string>(mrsStart.X));
+		start.append(",\"Y\": " + boost::lexical_cast<std::string>(mrsStart.Y));
+		start.append(",\"Z\": " + boost::lexical_cast<std::string>(mrsStart.Z));
+		start.append("}");
+
+		std::string end;
+		end.append("{ \"X\": " + boost::lexical_cast<std::string>(mrsEnd.X));
+		end.append(",\"Y\": " + boost::lexical_cast<std::string>(mrsEnd.Y));
+		end.append(",\"Z\": " + boost::lexical_cast<std::string>(mrsEnd.Z));
+		end.append("}");
+
+		json j_start_point = boost::lexical_cast<json>(start);
+		json j_end_point = boost::lexical_cast<json>(end);
+		j_points.push_back(j_start_point);
+		j_points.push_back(j_end_point);
+
+		json json_axis;
+		json_axis["points"] = j_points;
+		if (axisName.has_value()) {
+			json_axis["tag"] = axisName.value();
+		}
+
+		j_axes.push_back(json_axis);
+		(*gridAxes).push_back(mrsAxis);
+	}
+
+	return j_axes;
+}
+
+void export_grids(json grids, path_t output_filename) {
+	/*json j_file(grids);
+	j_file.*/
+	path_t grid_output_filename = output_filename.substr(0, output_filename.find_last_of('.')).append(L".json");
+	std::ofstream j_grid_file(grid_output_filename);
+	j_grid_file << grids;
+	j_grid_file.close();
 }
 
 void fix_quantities(IfcParse::IfcFile& f, bool no_progress, bool quiet, bool stderr_progress) {

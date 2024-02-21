@@ -135,12 +135,15 @@ namespace IfcGeom {
 			std::ostringstream oss;
 
 			if (type == "IfcProject") {
-				oss << "project";
+				//oss << "project";
+				oss << "";
 			} else {
 				try {
-					oss << "product-" << IfcParse::IfcGlobalId(guid).formatted();
+					//oss << "product-" << IfcParse::IfcGlobalId(guid).formatted();
+					oss << IfcParse::IfcGlobalId(guid).formatted();
 				} catch (const std::exception& e) {
-					oss << "product";
+					//oss << "product";
+					oss << "";
 					Logger::Error(e);
 				}
 			}
@@ -151,8 +154,8 @@ namespace IfcGeom {
                 boost::replace_all(ctx, " ", "-");
 				oss << "-" << ctx;
 			}
-
-			_unique_id = oss.str();
+			_unique_id = guid;
+			//_unique_id = oss.str();
 		}
 		virtual ~Element() {}
 	};

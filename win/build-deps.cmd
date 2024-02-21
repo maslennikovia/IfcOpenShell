@@ -210,6 +210,9 @@ set PATH=%PATH%;%INSTALL_DIR%\sqlite3\bin
 copy sqlite3.h %INSTALL_DIR%\sqlite3\include
 popd
 
+REM SKIP PROJ BUILD
+goto mpir
+
 set DEPENDENCY_NAME=proj
 set DEPENDENCY_DIR=%DEPS_DIR%\proj-9.2.1
 call :DownloadFile https://download.osgeo.org/proj/proj-9.2.1.zip "%DEPS_DIR%" proj-9.2.1.zip
@@ -298,6 +301,8 @@ ctest -S HDF5config.cmake,BUILD_GENERATOR=VS%VS_VER%%ARCH_BITS_64% -C %BUILD_CFG
 call :ExtractArchive %HDF5_INSTALL_ZIP_NAME%.zip "%INSTALL_DIR%" "%INSTALL_DIR%\%HDF5_INSTALL_ZIP_NAME%"
 popd
 
+
+goto JSON
 :: Note all of the dependencies have appropriate label so that user can easily skip something if wanted
 :: by modifying this file and using goto.
 :Boost
