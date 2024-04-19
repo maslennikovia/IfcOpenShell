@@ -207,7 +207,8 @@ void GltfSerializer::write(const IfcGeom::TriangulationElement* o) {
 		node["matrix"] = matrix_flat;
 	}
 
-	auto guid1 = object_id(o);
+	std::string opt;
+
 	node["name"] = object_id(o);
 	
 	int current_mesh_index;
